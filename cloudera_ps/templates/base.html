@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Embedded Registry Image Manager{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/cloudera.css') }}">
+</head>
+<body>
+    <header class="banner">
+        <div class="banner-inner">
+            <img src="{{ url_for('static', filename='img/cloudera-logo.svg') }}" alt="Cloudera" class="banner-logo">
+            <h1 class="banner-title">Embedded Registry Image Manager</h1>
+        </div>
+    </header>
+
+    <nav class="tab-nav">
+        <a href="{{ url_for('images') }}" class="tab-link{% if active_tab == 'images' %} active{% endif %}">Images</a>
+        <a href="{{ url_for('settings') }}" class="tab-link{% if active_tab == 'settings' %} active{% endif %}">Settings</a>
+    </nav>
+
+    <main class="content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                        <div class="flash flash-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>Embedded Registry Image Manager</p>
+    </footer>
+</body>
+</html>

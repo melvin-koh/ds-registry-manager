@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — Embedded Registry Image Manager{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Registry Settings</h2>
+    <p class="help-text">
+        Configure the Docker registry URL and credentials.
+    </p>
+
+    <form method="post" action="{{ url_for('settings') }}" class="settings-form">
+        <div class="form-group">
+            <label for="registry_url">Registry URL</label>
+            <input
+                type="url"
+                id="registry_url"
+                name="registry_url"
+                value="{{ registry_url }}"
+                placeholder="https://registry.example.com:5000"
+                required
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="registry_user">Username</label>
+            <input
+                type="text"
+                id="registry_user"
+                name="registry_user"
+                value="{{ registry_user }}"
+                placeholder="registry-user"
+                required
+            >
+        </div>
+
+        <div class="form-group">
+            <label for="registry_password">Password</label>
+            <input
+                type="password"
+                id="registry_password"
+                name="registry_password"
+                placeholder="{% if has_existing_config %}Leave blank to keep current password{% else %}Enter password{% endif %}"
+                {% if not has_existing_config %}required{% endif %}
+            >
+        </div>
+
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </div>
+    </form>
+</section>
+{% endblock %}

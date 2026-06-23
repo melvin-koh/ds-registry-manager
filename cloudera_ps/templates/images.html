@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Images — Embedded Registry Image Manager{% endblock %}
+
+{% block content %}
+<section class="card">
+    <div class="card-header">
+        <h2>Registry Images</h2>
+        <a href="{{ url_for('images', page=page) }}" class="btn btn-secondary">Refresh</a>
+    </div>
+
+    {% if not error %}
+        <p class="help-text">
+            Showing {{ images|length }} of {{ total_items }} image(s). Sorted alphabetically by full path.
+        </p>
+    {% endif %}
+
+    <div class="table-wrapper">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Image Path</th>
+                    <th>Tag Count</th>
+                    <th>Latest Tag</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if images %}
+                    {% for image in images %}
+                        <tr>
+                            <td class="mono">{{ image.image }}</td>
+                            <td>{{ image.tag_count }}</td>
+                            <td class="mono">{{ image.latest_tag }}</td>
+                        </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="3" class="empty-state">
+                            {% if error %}Unable to load images. Check your registry settings.{% else %}No images found in the registry.{% endif %}
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+
+    {% if total_pages > 1 and not error %}
+        <nav class="pagination" aria-label="Image list pagination">
+            {% if page > 1 %}
+                <a href="{{ url_for('images', page=page - 1) }}" class="page-link">&laquo; Prev</a>
+            {% else %}
+                <span class="page-link disabled">&laquo; Prev</span>
+            {% endif %}
+
+            {% for p in range(1, total_pages + 1) %}
+                {% if p == page %}
+                    <span class="page-link current">{{ p }}</span>
+                {% else %}
+                    <a href="{{ url_for('images', page=p) }}" class="page-link">{{ p }}</a>
+                {% endif %}
+            {% endfor %}
+
+            {% if page < total_pages %}
+                <a href="{{ url_for('images', page=page + 1) }}" class="page-link">Next &raquo;</a>
+            {% else %}
+                <span class="page-link disabled">Next &raquo;</span>
+            {% endif %}
+        </nav>
+    {% endif %}
+</section>
+
+<section class="card card-muted">
+    <h3>Additional image details available from Docker Registry</h3>
+    <p class="help-text">
+        The table above shows repository path, tag count, and latest tag using the catalog and tags APIs.
+        Additional metadata can be retrieved per image/tag via the manifest and config blob endpoints:
+    </p>
+    <ul class="detail-list">
+        <li><strong>Manifest digest</strong> — unique SHA256 content hash from the manifest HEAD request</li>
+        <li><strong>Image size</strong> — total bytes from summing manifest layer sizes</li>
+        <li><strong>Architecture / OS</strong> — platform info from the config blob (e.g. amd64, linux)</li>
+        <li><strong>Created date</strong> — image build timestamp from the config blob</li>
+        <li><strong>Media type</strong> — OCI or Docker schema format</li>
+        <li><strong>Layer count</strong> — number of layers in the manifest</li>
+    </ul>
+</section>
+{% endblock %}
