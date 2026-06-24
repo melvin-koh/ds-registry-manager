@@ -6,82 +6,156 @@
 <section class="card">
     <div class="card-header">
         <h2>Registry Images</h2>
-        <a href="{{ url_for('images', page=page) }}" class="btn btn-secondary">Refresh</a>
+        <a href="{{ url_for('images') }}" class="btn btn-secondary" id="refresh-btn">Refresh</a>
     </div>
 
-    {% if not error %}
-        <p class="help-text">
-            Showing {{ images|length }} of {{ total_items }} image(s). Sorted alphabetically by full path.
-        </p>
-    {% endif %}
-
-    <div class="table-wrapper">
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Image Path</th>
-                    <th>Tag Count</th>
-                    <th>Latest Tag</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% if images %}
-                    {% for image in images %}
-                        <tr>
-                            <td class="mono">{{ image.image }}</td>
-                            <td>{{ image.tag_count }}</td>
-                            <td class="mono">{{ image.latest_tag }}</td>
-                        </tr>
-                    {% endfor %}
-                {% else %}
-                    <tr>
-                        <td colspan="3" class="empty-state">
-                            {% if error %}Unable to load images. Check your registry settings.{% else %}No images found in the registry.{% endif %}
-                        </td>
-                    </tr>
-                {% endif %}
-            </tbody>
-        </table>
-    </div>
-
-    {% if total_pages > 1 and not error %}
-        <nav class="pagination" aria-label="Image list pagination">
-            {% if page > 1 %}
-                <a href="{{ url_for('images', page=page - 1) }}" class="page-link">&laquo; Prev</a>
-            {% else %}
-                <span class="page-link disabled">&laquo; Prev</span>
-            {% endif %}
-
-            {% for p in range(1, total_pages + 1) %}
-                {% if p == page %}
-                    <span class="page-link current">{{ p }}</span>
-                {% else %}
-                    <a href="{{ url_for('images', page=p) }}" class="page-link">{{ p }}</a>
-                {% endif %}
-            {% endfor %}
-
-            {% if page < total_pages %}
-                <a href="{{ url_for('images', page=page + 1) }}" class="page-link">Next &raquo;</a>
-            {% else %}
-                <span class="page-link disabled">Next &raquo;</span>
-            {% endif %}
-        </nav>
-    {% endif %}
-</section>
-
-<section class="card card-muted">
-    <h3>Additional image details available from Docker Registry</h3>
-    <p class="help-text">
-        The table above shows repository path, tag count, and latest tag using the catalog and tags APIs.
-        Additional metadata can be retrieved per image/tag via the manifest and config blob endpoints:
+  <!-- Loading overlay -->
+  <div id="loading-overlay" style="
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; padding: 3rem 1rem; gap: 1rem;">
+    <svg width="48" height="48" viewBox="0 0 48 48" fill="none"
+         xmlns="http://www.w3.org/2000/svg"
+         style="animation: spin 1s linear infinite;">
+      <circle cx="24" cy="24" r="20" stroke="#e0e0e0" stroke-width="4"/>
+      <path d="M44 24a20 20 0 0 0-20-20" stroke="#F96702" stroke-width="4"
+            stroke-linecap="round"/>
+    </svg>
+    <p id="loading-status" style="color:#555; font-size:0.95rem; margin:0;">
+      Connecting to registry…
     </p>
-    <ul class="detail-list">
-        <li><strong>Manifest digest</strong> — unique SHA256 content hash from the manifest HEAD request</li>
-        <li><strong>Image size</strong> — total bytes from summing manifest layer sizes</li>
-        <li><strong>Architecture / OS</strong> — platform info from the config blob (e.g. amd64, linux)</li>
-        <li><strong>Created date</strong> — image build timestamp from the config blob</li>
-        <li><strong>Media type</strong> — OCI or Docker schema format</li>
-        <li><strong>Layer count</strong> — number of layers in the manifest</li>
-    </ul>
+    <div style="width:320px; background:#e0e0e0; border-radius:4px; height:8px; overflow:hidden;">
+      <div id="progress-bar"
+           style="height:100%; width:0; background:#F96702;
+                  border-radius:4px; transition:width 0.2s ease;"></div>
+    </div>
+    <p id="progress-label" style="color:#888; font-size:0.85rem; margin:0;">0 / 0 images</p>
+  </div>
+
+  <!-- Results (hidden until load completes) -->
+  <div id="results-area" style="display:none;">
+    <p class="help-text" id="summary-text"></p>
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Image Path</th>
+            <th>Tag Count</th>
+            <th>Latest Tag</th>
+          </tr>
+        </thead>
+        <tbody id="image-tbody"></tbody>
+      </table>
+    </div>
+    <nav class="pagination" id="pagination-nav" aria-label="Image list pagination"></nav>
+  </div>
+
+  <!-- Error area -->
+  <div id="error-area" style="display:none;">
+    <p class="empty-state" id="error-text" style="color:#c0392b; padding:2rem;"></p>
+  </div>
 </section>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<div id="page-config" data-per-page="{{ images_per_page }}" style="display:none;"></div>
+
+<script>
+const PER_PAGE = parseInt(document.getElementById('page-config').dataset.perPage, 10);
+let allRows = [];
+let currentPage = 1;
+
+function renderPage(page) {
+  currentPage = page;
+  const total = allRows.length;
+  const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+  page = Math.max(1, Math.min(page, totalPages));
+  const start = (page - 1) * PER_PAGE;
+  const slice = allRows.slice(start, start + PER_PAGE);
+
+  const tbody = document.getElementById('image-tbody');
+  tbody.innerHTML = slice.map(r => `
+    <tr>
+      <td class="mono">${escHtml(r.image)}</td>
+      <td>${r.tag_count}</td>
+      <td class="mono">${escHtml(r.latest_tag)}</td>
+    </tr>`).join('');
+
+  document.getElementById('summary-text').textContent =
+    `Showing ${slice.length} of ${total} image(s). Sorted alphabetically by full path.`;
+
+  // Pagination
+  const nav = document.getElementById('pagination-nav');
+  if (totalPages <= 1) { nav.style.display = 'none'; return; }
+  nav.style.display = '';
+  let html = page > 1
+    ? `<a class="page-link" href="#" onclick="renderPage(${page-1});return false;">&laquo; Prev</a>`
+    : `<span class="page-link disabled">&laquo; Prev</span>`;
+  for (let p = 1; p <= totalPages; p++) {
+    html += p === page
+      ? `<span class="page-link current">${p}</span>`
+      : `<a class="page-link" href="#" onclick="renderPage(${p});return false;">${p}</a>`;
+  }
+  html += page < totalPages
+    ? `<a class="page-link" href="#" onclick="renderPage(${page+1});return false;">Next &raquo;</a>`
+    : `<span class="page-link disabled">Next &raquo;</span>`;
+  nav.innerHTML = html;
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+const evtSource = new EventSource("{{ url_for('api_load_images') }}");
+
+evtSource.onmessage = function(e) {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === 'total') {
+    document.getElementById('loading-status').textContent =
+      `Loading ${msg.total} image(s)…`;
+    document.getElementById('progress-label').textContent =
+      `0 / ${msg.total} images`;
+  }
+  else if (msg.type === 'progress') {
+    const pct = msg.total > 0 ? (msg.done / msg.total * 100) : 0;
+    document.getElementById('progress-bar').style.width = pct + '%';
+    document.getElementById('loading-status').textContent =
+      `Loading: ${msg.image}`;
+    document.getElementById('progress-label').textContent =
+      `${msg.done} / ${msg.total} images`;
+  }
+  else if (msg.type === 'complete') {
+    evtSource.close();
+    allRows = msg.rows;
+    document.getElementById('loading-overlay').style.display = 'none';
+    document.getElementById('results-area').style.display = '';
+    if (allRows.length === 0) {
+      document.getElementById('image-tbody').innerHTML =
+        '<tr><td colspan="3" class="empty-state">No images found in the registry.</td></tr>';
+    } else {
+      renderPage(1);
+    }
+  }
+  else if (msg.type === 'error') {
+    evtSource.close();
+    document.getElementById('loading-overlay').style.display = 'none';
+    document.getElementById('error-area').style.display = '';
+    document.getElementById('error-text').textContent =
+      'Unable to load images: ' + msg.message;
+  }
+};
+
+evtSource.onerror = function() {
+  evtSource.close();
+  document.getElementById('loading-overlay').style.display = 'none';
+  document.getElementById('error-area').style.display = '';
+  document.getElementById('error-text').textContent =
+    'Connection to registry stream lost. Please refresh.';
+};
+</script>
+
 {% endblock %}

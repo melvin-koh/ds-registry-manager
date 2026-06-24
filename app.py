@@ -1,8 +1,9 @@
 import math
 import os
-
-from flask import Flask, flash, redirect, render_template, request, url_for
-
+import json
+import queue
+import threading
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 from cloudera_ps.EmbeddedRegistryUtil import EmbeddedRegistryUtil
 from cloudera_ps.util import (
     init_logging,
@@ -61,6 +62,98 @@ def _paginate(items, page, per_page):
     return items[start:end], page, total_pages, total_items
 
 
+# ---------------------------------------------------------------------------
+# Background-load SSE endpoint
+# ---------------------------------------------------------------------------
+
+def _stream_image_load(registry_url, registry_user, registry_password):
+    """
+    Generator that runs load_registry_image_list() in a background thread,
+    yielding SSE events with progress and final results.
+    """
+    q = queue.Queue()
+
+    def worker():
+        try:
+            from cloudera_ps.EmbeddedRegistryUtil import EmbeddedRegistryUtil as _Util
+            import requests as _req
+
+            # Monkey-patch _get_tags so we can emit progress per image.
+            original_list = _Util.list_images
+
+            def _patched_list(self):
+                # Re-implement list_images with per-image progress events.
+                img_list = []
+                seen = set()
+                page = 1000
+                next_url = f"{self._registry_url}{self._CATALOG}".replace("$page", str(page))
+                while next_url:
+                    resp = _req.get(
+                        next_url,
+                        auth=(self._registry_user, self._registry_password),
+                        timeout=30, verify=False,
+                    )
+                    resp.raise_for_status()
+                    payload = resp.json()
+                    for repo in payload.get("repositories", []):
+                        if isinstance(repo, str) and repo not in seen:
+                            seen.add(repo)
+                            img_list.append(repo)
+                    next_link = resp.links.get("next", {}).get("url")
+                    if next_link and next_link.startswith("/"):
+                        next_link = f"{self._registry_url}{next_link}"
+                    next_url = next_link
+
+                total = len(img_list)
+                q.put({"type": "total", "total": total})
+
+                repositories = []
+                for idx, image in enumerate(img_list, 1):
+                    try:
+                        tags = self._get_tags(image)
+                    except Exception as exc:
+                        logger.error("Failed to get tags for '%s': %s", image, exc)
+                        tags = []
+                    repositories.append({"image": image, "tags": tags})
+                    q.put({"type": "progress", "done": idx, "total": total, "image": image})
+
+                return repositories
+
+            _Util.list_images = _patched_list
+            try:
+                reg = EmbeddedRegistryUtil(registry_url, registry_user, registry_password)
+                images = reg.list_images()
+            finally:
+                _Util.list_images = original_list  # restore
+
+            rows = _prepare_image_rows(images)
+            q.put({"type": "complete", "rows": rows})
+        except Exception as exc:
+            q.put({"type": "error", "message": str(exc)})
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+    while True:
+        event = q.get()
+        yield f"data: {json.dumps(event)}\n\n"
+        if event["type"] in ("complete", "error"):
+            break
+
+
+@app.route("/api/load-images")
+def api_load_images():
+    registry_url, registry_user, registry_password = _load_config()
+    if not _config_complete(registry_url, registry_user, registry_password):
+        payload = json.dumps({"type": "error", "message": "Registry not configured."})
+        return Response(f"data: {payload}\n\n", mimetype="text/event-stream")
+    return Response(
+        _stream_image_load(registry_url, registry_user, registry_password),
+        mimetype="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 @app.route("/")
 def images():
     registry_url, registry_user, registry_password = _load_config()
@@ -68,37 +161,12 @@ def images():
         flash("Configure registry credentials before viewing images.", "warning")
         return redirect(url_for("settings"))
 
-    page = request.args.get("page", 1, type=int)
-    rows = []
-    error = None
-
-    logger.info("Images page requested (page=%d)", page)
-    try:
-        raw_images = load_registry_image_list(
-            registry_url, registry_user, registry_password
-        )
-        rows = _prepare_image_rows(raw_images)
-        logger.info(
-            "Prepared %d image row(s) for display on page %d",
-            len(rows),
-            page,
-        )
-    except ValueError as exc:
-        error = str(exc)
-        logger.error("Error loading images for display: %s", error)
-        flash(error, "error")
-
-    page_rows, page, total_pages, total_items = _paginate(rows, page, IMAGES_PER_PAGE)
+    logger.info("Images page requested — will stream via SSE")
 
     return render_template(
         "images.html",
         active_tab="images",
-        images=page_rows,
-        page=page,
-        total_pages=total_pages,
-        total_items=total_items,
-        per_page=IMAGES_PER_PAGE,
-        error=error,
+        images_per_page=IMAGES_PER_PAGE,
     )
 
 
@@ -128,7 +196,7 @@ def settings():
                     registry_url, registry_user, password_to_save, REGCONF_PATH
                 )
                 flash("Registry settings saved successfully.", "success")
-                return redirect(url_for("images"))
+                #return redirect(url_for("images"))
             except ValueError as exc:
                 flash(str(exc), "error")
 
