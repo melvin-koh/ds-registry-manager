@@ -249,6 +249,32 @@ def api_load_images():
     )
 
 
+@app.route("/api/refresh")
+def api_refresh():
+    """Force-reset load state and start a fresh background worker."""
+    registry_url, registry_user, registry_password = _load_config()
+    if not _config_complete(registry_url, registry_user, registry_password):
+        payload = json.dumps({"type": "error", "message": "Registry not configured."})
+        return Response(f"data: {payload}\n\n", mimetype="text/event-stream")
+
+    with _load_lock:
+        _load_state.reset()
+        _load_state.status = "running"
+        t = threading.Thread(
+            target=_run_worker,
+            args=(registry_url, registry_user, registry_password),
+            daemon=True,
+        )
+        t.start()
+        logger.info("Manual refresh — new background worker thread started")
+
+    return Response(
+        _sse_stream(),
+        mimetype="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 @app.route("/")
 def images():
     registry_url, registry_user, registry_password = _load_config()

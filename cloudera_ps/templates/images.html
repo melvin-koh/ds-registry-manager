@@ -6,8 +6,8 @@
 <section class="card">
     <div class="card-header">
         <h2>Registry Images</h2>
-        <a href="{{ url_for('images') }}" class="btn btn-secondary" id="refresh-btn">Refresh</a>
-    </div>
+        <button class="btn btn-secondary" id="refresh-btn" onclick="startRefresh()">Refresh</button>
+      </div>
 
   <!-- Loading overlay -->
   <div id="loading-overlay" style="
@@ -66,6 +66,41 @@ const PER_PAGE = parseInt(document.getElementById('page-config').dataset.perPage
 let allRows = [];
 let currentPage = 1;
 
+function startStream(url) {
+  document.getElementById('loading-overlay').style.display = 'flex';
+  document.getElementById('results-area').style.display = 'none';
+  document.getElementById('error-area').style.display = 'none';
+  document.getElementById('loading-status').textContent = 'Connecting to registry…';
+  document.getElementById('progress-bar').style.width = '0';
+  document.getElementById('progress-label').textContent = '0 / 0 images';
+
+  const src = new EventSource(url);
+  src.onmessage = handleMessage.bind(src);
+  src.onerror = function() {
+    src.close();
+    document.getElementById('loading-overlay').style.display = 'none';
+    document.getElementById('error-area').style.display = '';
+    document.getElementById('error-text').textContent =
+      'Connection to registry stream lost. Please refresh.';
+  };
+  return src;
+}
+
+function startRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  if (window._activeSource) { window._activeSource.close(); }
+  window._activeSource = startStream("{{ url_for('api_refresh') }}");
+  window._activeSource.addEventListener('message', function(e) {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'complete' || msg.type === 'error') {
+      btn.disabled = false;
+      btn.textContent = '↻ Refresh';
+    }
+  });
+}
+
 function renderPage(page) {
   currentPage = page;
   const total = allRows.length;
@@ -109,9 +144,8 @@ function escHtml(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-const evtSource = new EventSource("{{ url_for('api_load_images') }}");
-
-evtSource.onmessage = function(e) {
+function handleMessage(e) {
+  const src = this;
   const msg = JSON.parse(e.data);
 
   if (msg.type === 'total') {
@@ -129,7 +163,7 @@ evtSource.onmessage = function(e) {
       `${msg.done} / ${msg.total} images`;
   }
   else if (msg.type === 'complete') {
-    evtSource.close();
+    src.close();
     allRows = msg.rows;
     document.getElementById('loading-overlay').style.display = 'none';
     document.getElementById('results-area').style.display = '';
@@ -141,21 +175,16 @@ evtSource.onmessage = function(e) {
     }
   }
   else if (msg.type === 'error') {
-    evtSource.close();
+    src.close();
     document.getElementById('loading-overlay').style.display = 'none';
     document.getElementById('error-area').style.display = '';
     document.getElementById('error-text').textContent =
       'Unable to load images: ' + msg.message;
   }
-};
+}
 
-evtSource.onerror = function() {
-  evtSource.close();
-  document.getElementById('loading-overlay').style.display = 'none';
-  document.getElementById('error-area').style.display = '';
-  document.getElementById('error-text').textContent =
-    'Connection to registry stream lost. Please refresh.';
-};
+// Initial page load
+window._activeSource = startStream("{{ url_for('api_load_images') }}");
 </script>
 
 {% endblock %}
