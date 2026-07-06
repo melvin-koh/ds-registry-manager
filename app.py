@@ -11,6 +11,7 @@ from cloudera_ps.util import (
     load_registry_image_list,
     logger,
     save_registry_config,
+    format_bytes,
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -273,6 +274,41 @@ def api_refresh():
         mimetype="text/event-stream",
         headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
     )
+
+@app.route("/api/image-detail")
+def api_image_detail():
+    """Return tag details for a single image as JSON."""
+    image_path = request.args.get("image", "").strip()
+    if not image_path:
+        return json.dumps({"error": "Missing 'image' parameter."}), 400
+
+    registry_url, registry_user, registry_password = _load_config()
+    if not _config_complete(registry_url, registry_user, registry_password):
+        return json.dumps({"error": "Registry not configured."}), 503
+
+    try:
+        reg = EmbeddedRegistryUtil(registry_url, registry_user, registry_password)
+        details = reg.get_image_detail(image_path)
+        # Add human-readable size to each tag entry
+        for entry in details:
+            entry["total_size"] = format_bytes(entry.get("total_size_bytes", 0))
+        return json.dumps({"image": image_path, "tags": details}), 200, {
+            "Content-Type": "application/json"
+        }
+    except ValueError as exc:
+        logger.error("image-detail error for '%s': %s", image_path, exc)
+        return json.dumps({"error": str(exc)}), 500
+
+
+@app.route("/image")
+def image_detail():
+    """Render the image detail page (data loaded client-side via /api/image-detail)."""
+    image_path = request.args.get("image", "").strip()
+    if not image_path:
+        flash("No image specified.", "warning")
+        return redirect(url_for("images"))
+
+    return render_template("image_detail.html", active_tab="images", image_path=image_path)
 
 
 @app.route("/")

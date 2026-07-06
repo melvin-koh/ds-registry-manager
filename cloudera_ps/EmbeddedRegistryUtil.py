@@ -79,6 +79,88 @@ class EmbeddedRegistryUtil:
         return normalized_tags
 
 
+    def get_image_detail(self, imagepath: str) -> List[Dict[str, Any]]:
+        """
+        Return a list of tag-detail dicts for the given image path.
+        Each dict contains: tag, digest, architecture, os, created, total_size_bytes.
+        """
+        tags = self._get_tags(imagepath)
+        details = []
+
+        for tag in sorted(tags):
+            endpoint = (
+                self._MANIFEST
+                .replace("$image", imagepath.strip("/"))
+                .replace("$tag", tag)
+            )
+            url = f"{self._registry_url}{endpoint}"
+
+            try:
+                # Request the OCI/Docker v2 manifest schema
+                resp = requests.get(
+                    url,
+                    auth=(self._registry_user, self._registry_password),
+                    headers={
+                        "Accept": (
+                            "application/vnd.docker.distribution.manifest.v2+json,"
+                            "application/vnd.oci.image.manifest.v1+json"
+                        )
+                    },
+                    timeout=30,
+                    verify=False,
+                )
+                resp.raise_for_status()
+            except requests.RequestException as exc:
+                logger.error("Failed to get manifest for '%s:%s': %s", imagepath, tag, exc)
+                details.append({"tag": tag, "error": str(exc)})
+                continue
+
+            digest = resp.headers.get("Docker-Content-Digest", "—")
+            manifest = resp.json()
+
+            # Total compressed size from layer blobs
+            layers = manifest.get("layers", [])
+            total_size = sum(layer.get("size", 0) for layer in layers)
+
+            # Architecture / OS live in the config blob — fetch it
+            arch, os_, created = "—", "—", "—"
+            config_digest = manifest.get("config", {}).get("digest")
+            if config_digest:
+                config_url = (
+                    f"{self._registry_url}/v2/{imagepath.strip('/')}/blobs/{config_digest}"
+                )
+                try:
+                    cfg_resp = requests.get(
+                        config_url,
+                        auth=(self._registry_user, self._registry_password),
+                        timeout=30,
+                        verify=False,
+                    )
+                    cfg_resp.raise_for_status()
+                    cfg = cfg_resp.json()
+                    arch = cfg.get("architecture", "—")
+                    os_ = cfg.get("os", "—")
+                    created = cfg.get("created", "—")
+                    # Trim sub-second precision: "2024-01-15T10:30:00.000Z" → "2024-01-15T10:30:00Z"
+                    if created and "." in created:
+                        created = created.split(".")[0] + "Z"
+                except Exception as exc:
+                    logger.error(
+                        "Failed to fetch config blob for '%s:%s': %s", imagepath, tag, exc
+                    )
+
+            details.append({
+                "tag": tag,
+                "digest": digest,
+                "architecture": arch,
+                "os": os_,
+                "created": created,
+                "total_size_bytes": total_size,
+            })
+
+        return details
+
+
     def list_images(self) -> List[Dict[str, List[str]]]:
         """
         List all repositories from the Docker Registry catalog endpoint.

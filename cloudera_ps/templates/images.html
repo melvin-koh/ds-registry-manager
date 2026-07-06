@@ -57,6 +57,11 @@
 
 <style>
 @keyframes spin { to { transform: rotate(360deg); } }
+.image-link {
+  color: var(--cloudera-orange);
+  text-decoration: none;
+}
+.image-link:hover { text-decoration: underline; }
 </style>
 
 <div id="page-config" data-per-page="{{ images_per_page }}" style="display:none;"></div>
@@ -112,7 +117,7 @@ function renderPage(page) {
   const tbody = document.getElementById('image-tbody');
   tbody.innerHTML = slice.map(r => `
     <tr>
-      <td class="mono">${escHtml(r.image)}</td>
+      <td class="mono"><a href="/image?image=${encodeURIComponent(r.image)}" class="image-link">${escHtml(r.image)}</a></td>
       <td>${r.tag_count}</td>
       <td class="mono">${escHtml(r.latest_tag)}</td>
     </tr>`).join('');

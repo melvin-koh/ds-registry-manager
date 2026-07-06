@@ -10,6 +10,17 @@ LOG_FORMAT = "%(asctime)-15s %(levelname)-6s %(message)s"
 logger = logging.getLogger("cloudera_ps")
 
 
+def format_bytes(n: int) -> str:
+    """Return a human-readable byte size string (e.g. '123.4 MB')."""
+    if n <= 0:
+        return "—"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} PB"
+
+
 def init_logging(logfile: str = "app.log") -> logging.Logger:
     """Configure application logging to the given log file."""
     handler = logging.FileHandler(logfile, encoding="utf-8")
