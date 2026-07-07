@@ -6,7 +6,10 @@
 <section class="card">
     <div class="card-header">
         <h2>Registry Images</h2>
-        <button class="btn btn-secondary" id="refresh-btn" onclick="startRefresh()">Refresh</button>
+        <div class="card-header-actions">
+          <button class="btn btn-secondary" id="refresh-btn" onclick="startRefresh()">Refresh</button>
+          <button class="btn btn-secondary" id="delete-btn" type="button">Delete</button>
+        </div>
       </div>
 
   <!-- Loading overlay -->
@@ -38,6 +41,7 @@
       <table class="data-table">
         <thead>
           <tr>
+            <th class="checkbox-col"><input type="checkbox" id="select-all-images" aria-label="Select all images on this page"></th>
             <th>Image Path</th>
             <th>Tag Count</th>
             <th>Latest Tag</th>
@@ -101,7 +105,7 @@ function startRefresh() {
     const msg = JSON.parse(e.data);
     if (msg.type === 'complete' || msg.type === 'error') {
       btn.disabled = false;
-      btn.textContent = '↻ Refresh';
+      btn.textContent = 'Refresh';
     }
   });
 }
@@ -117,10 +121,17 @@ function renderPage(page) {
   const tbody = document.getElementById('image-tbody');
   tbody.innerHTML = slice.map(r => `
     <tr>
+      <td class="checkbox-col"><input type="checkbox" class="image-select" value="${escHtml(r.image)}" aria-label="Select ${escHtml(r.image)}"></td>
       <td class="mono"><a href="/image?image=${encodeURIComponent(r.image)}" class="image-link">${escHtml(r.image)}</a></td>
       <td>${r.tag_count}</td>
       <td class="mono">${escHtml(r.latest_tag)}</td>
     </tr>`).join('');
+
+  const selectAll = document.getElementById('select-all-images');
+  selectAll.checked = false;
+  selectAll.onchange = function() {
+    document.querySelectorAll('.image-select').forEach(cb => { cb.checked = selectAll.checked; });
+  };
 
   document.getElementById('summary-text').textContent =
     `Showing ${slice.length} of ${total} image(s). Sorted alphabetically by full path.`;
@@ -149,6 +160,58 @@ function escHtml(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+const GC_MESSAGE =
+  'Disk space will only be reclaimed after the registry runs garbage collection.';
+
+async function deleteSelectedImages() {
+  const selected = [...document.querySelectorAll('.image-select:checked')].map(cb => cb.value);
+  if (selected.length === 0) {
+    alert('Please select at least one image to delete.');
+    return;
+  }
+
+  const confirmMsg =
+    `Are you sure you want to delete the following image(s) and all of their tags?\n\n` +
+    selected.map(image => `• ${image}`).join('\n') +
+    `\n\nThis action cannot be undone.`;
+  if (!confirm(confirmMsg)) return;
+
+  const btn = document.getElementById('delete-btn');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+
+  try {
+    const resp = await fetch("{{ url_for('api_delete_images') }}", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: selected.map(image => ({ image })) }),
+    });
+    const data = await resp.json();
+
+    if (data.deleted && data.deleted.length > 0) {
+      let successMsg =
+        `Successfully deleted:\n\n${data.deleted.map(item => `• ${item}`).join('\n')}\n\n${GC_MESSAGE}`;
+      if (data.errors && data.errors.length > 0) {
+        successMsg +=
+          `\n\nSome deletions failed:\n` +
+          data.errors.map(e => `• ${e.item}: ${e.error}`).join('\n');
+      }
+      alert(successMsg);
+      startRefresh();
+    } else {
+      const errDetail = data.errors && data.errors.length
+        ? data.errors.map(e => `• ${e.item}: ${e.error}`).join('\n')
+        : (data.error || 'Unknown error');
+      alert(`Delete failed:\n\n${errDetail}`);
+    }
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
+
 function handleMessage(e) {
   const src = this;
   const msg = JSON.parse(e.data);
@@ -174,7 +237,7 @@ function handleMessage(e) {
     document.getElementById('results-area').style.display = '';
     if (allRows.length === 0) {
       document.getElementById('image-tbody').innerHTML =
-        '<tr><td colspan="3" class="empty-state">No images found in the registry.</td></tr>';
+        '<tr><td colspan="4" class="empty-state">No images found in the registry.</td></tr>';
     } else {
       renderPage(1);
     }
@@ -187,6 +250,8 @@ function handleMessage(e) {
       'Unable to load images: ' + msg.message;
   }
 }
+
+document.getElementById('delete-btn').addEventListener('click', deleteSelectedImages);
 
 // Initial page load
 window._activeSource = startStream("{{ url_for('api_load_images') }}");

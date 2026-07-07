@@ -26,11 +26,18 @@
 
   <!-- Results -->
   <div id="results-area" style="display:none;">
-    <p class="help-text" id="summary-text"></p>
+    <div class="results-toolbar">
+      <p class="help-text" id="summary-text"></p>
+      <div class="card-header-actions">
+        <button class="btn btn-secondary" id="refresh-btn" type="button">Refresh</button>
+        <button class="btn btn-secondary" id="delete-btn" type="button">Delete</button>
+      </div>
+    </div>
     <div class="table-wrapper">
       <table class="data-table">
         <thead>
           <tr>
+            <th class="checkbox-col"><input type="checkbox" id="select-all-tags" aria-label="Select all tags"></th>
             <th>Tag</th>
             <th>Digest</th>
             <th>Architecture</th>
@@ -76,44 +83,131 @@ function escHtml(str) {
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-fetch(`/api/image-detail?image=${encodeURIComponent(IMAGE_PATH)}`)
-  .then(r => r.json())
-  .then(data => {
-    document.getElementById('loading-overlay').style.display = 'none';
+const GC_MESSAGE =
+  'Disk space will only be reclaimed after the registry runs garbage collection.';
 
-    if (data.error) {
+function renderTagTable(tags) {
+  document.getElementById('summary-text').textContent =
+    `${tags.length} tag(s) found for this image.`;
+
+  const tbody = document.getElementById('detail-tbody');
+  if (tags.length === 0) {
+    tbody.innerHTML =
+      '<tr><td colspan="7" class="empty-state">No tags found for this image.</td></tr>';
+    document.getElementById('select-all-tags').checked = false;
+    return;
+  }
+
+  tbody.innerHTML = tags.map(t => `
+    <tr>
+      <td class="checkbox-col"><input type="checkbox" class="tag-select" value="${escHtml(t.tag)}" aria-label="Select tag ${escHtml(t.tag)}"></td>
+      <td class="mono">${escHtml(t.tag)}</td>
+      <td class="digest-cell">${escHtml(t.digest || '—')}</td>
+      <td>${escHtml(t.architecture || '—')}</td>
+      <td>${escHtml(t.os || '—')}</td>
+      <td>${escHtml(t.created || '—')}</td>
+      <td>${escHtml(t.total_size || '—')}</td>
+    </tr>`).join('');
+
+  const selectAll = document.getElementById('select-all-tags');
+  selectAll.checked = false;
+  selectAll.onchange = function() {
+    document.querySelectorAll('.tag-select').forEach(cb => { cb.checked = selectAll.checked; });
+  };
+}
+
+function loadTagDetails() {
+  document.getElementById('loading-overlay').style.display = 'flex';
+  document.getElementById('results-area').style.display = 'none';
+  document.getElementById('error-area').style.display = 'none';
+
+  return fetch(`/api/image-detail?image=${encodeURIComponent(IMAGE_PATH)}`)
+    .then(r => r.json())
+    .then(data => {
+      document.getElementById('loading-overlay').style.display = 'none';
+
+      if (data.error) {
+        document.getElementById('error-area').style.display = '';
+        document.getElementById('error-text').textContent = 'Error: ' + data.error;
+        return;
+      }
+
+      renderTagTable(data.tags || []);
+      document.getElementById('results-area').style.display = '';
+    })
+    .catch(err => {
+      document.getElementById('loading-overlay').style.display = 'none';
       document.getElementById('error-area').style.display = '';
-      document.getElementById('error-text').textContent = 'Error: ' + data.error;
-      return;
-    }
+      document.getElementById('error-text').textContent =
+        'Failed to load image details: ' + err.message;
+    });
+}
 
-    const tags = data.tags || [];
-    document.getElementById('summary-text').textContent =
-      `${tags.length} tag(s) found for this image.`;
+async function refreshTagDetails() {
+  const btn = document.getElementById('refresh-btn');
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  try {
+    await loadTagDetails();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  }
+}
 
-    const tbody = document.getElementById('detail-tbody');
-    if (tags.length === 0) {
-      tbody.innerHTML =
-        '<tr><td colspan="6" class="empty-state">No tags found for this image.</td></tr>';
+async function deleteSelectedTags() {
+  const selected = [...document.querySelectorAll('.tag-select:checked')].map(cb => cb.value);
+  if (selected.length === 0) {
+    alert('Please select at least one tag to delete.');
+    return;
+  }
+
+  const confirmMsg =
+    `Are you sure you want to delete the following tag(s) from ${IMAGE_PATH}?\n\n` +
+    selected.map(tag => `• ${tag}`).join('\n') +
+    `\n\nThis action cannot be undone.`;
+  if (!confirm(confirmMsg)) return;
+
+  const btn = document.getElementById('delete-btn');
+  btn.disabled = true;
+  btn.textContent = 'Deleting…';
+
+  try {
+    const resp = await fetch("{{ url_for('api_delete_images') }}", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: selected.map(tag => ({ image: IMAGE_PATH, tag })),
+      }),
+    });
+    const data = await resp.json();
+
+    if (data.deleted && data.deleted.length > 0) {
+      let successMsg =
+        `Successfully deleted:\n\n${data.deleted.map(item => `• ${item}`).join('\n')}\n\n${GC_MESSAGE}`;
+      if (data.errors && data.errors.length > 0) {
+        successMsg +=
+          `\n\nSome deletions failed:\n` +
+          data.errors.map(e => `• ${e.item}: ${e.error}`).join('\n');
+      }
+      alert(successMsg);
+      await loadTagDetails();
     } else {
-      tbody.innerHTML = tags.map(t => `
-        <tr>
-          <td class="mono">${escHtml(t.tag)}</td>
-          <td class="digest-cell">${escHtml(t.digest || '—')}</td>
-          <td>${escHtml(t.architecture || '—')}</td>
-          <td>${escHtml(t.os || '—')}</td>
-          <td>${escHtml(t.created || '—')}</td>
-          <td>${escHtml(t.total_size || '—')}</td>
-        </tr>`).join('');
+      const errDetail = data.errors && data.errors.length
+        ? data.errors.map(e => `• ${e.item}: ${e.error}`).join('\n')
+        : (data.error || 'Unknown error');
+      alert(`Delete failed:\n\n${errDetail}`);
     }
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
 
-    document.getElementById('results-area').style.display = '';
-  })
-  .catch(err => {
-    document.getElementById('loading-overlay').style.display = 'none';
-    document.getElementById('error-area').style.display = '';
-    document.getElementById('error-text').textContent =
-      'Failed to load image details: ' + err.message;
-  });
+document.getElementById('refresh-btn').addEventListener('click', refreshTagDetails);
+document.getElementById('delete-btn').addEventListener('click', deleteSelectedTags);
+loadTagDetails();
 </script>
 {% endblock %}

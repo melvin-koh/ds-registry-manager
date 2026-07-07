@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import requests, warnings
 
@@ -84,8 +84,13 @@ class EmbeddedRegistryUtil:
         Return a list of tag-detail dicts for the given image path.
         Each dict contains: tag, digest, architecture, os, created, total_size_bytes.
         """
+
+        logger.info("Getting image detail for '%s'", imagepath)
+
         tags = self._get_tags(imagepath)
         details = []
+
+        logger.info("Got %d tags for '%s'", len(tags), imagepath)
 
         for tag in sorted(tags):
             endpoint = (
@@ -94,6 +99,8 @@ class EmbeddedRegistryUtil:
                 .replace("$tag", tag)
             )
             url = f"{self._registry_url}{endpoint}"
+
+            logger.info("Getting manifest for '%s:%s'", imagepath, tag)
 
             try:
                 # Request the OCI/Docker v2 manifest schema
@@ -158,7 +165,136 @@ class EmbeddedRegistryUtil:
                 "total_size_bytes": total_size,
             })
 
+            logger.debug(details)
+
         return details
+
+
+    _MANIFEST_ACCEPT = (
+        "application/vnd.docker.distribution.manifest.v2+json,"
+        "application/vnd.oci.image.manifest.v1+json,"
+        "application/vnd.docker.distribution.manifest.list.v2+json,"
+        "application/vnd.oci.image.index.v1+json"
+    )
+
+    @staticmethod
+    def _is_not_found(exc: requests.RequestException) -> bool:
+        response = getattr(exc, "response", None)
+        return response is not None and response.status_code == 404
+
+    def _resolve_manifest_digest(self, image_path: str, tag: str) -> str:
+        endpoint = (
+            self._MANIFEST
+            .replace("$image", image_path)
+            .replace("$tag", tag)
+        )
+        url = f"{self._registry_url}{endpoint}"
+
+        try:
+            resp = requests.get(
+                url,
+                auth=(self._registry_user, self._registry_password),
+                headers={"Accept": self._MANIFEST_ACCEPT},
+                timeout=30,
+                verify=False,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise ValueError(
+                f"Failed to get manifest for '{image_path}:{tag}': {exc}"
+            ) from exc
+
+        digest = resp.headers.get("Docker-Content-Digest")
+        if not digest:
+            raise ValueError(
+                f"Registry did not return a digest for '{image_path}:{tag}'; cannot delete."
+            )
+        return digest
+
+    def _delete_manifest_by_digest(self, image_path: str, digest: str) -> None:
+        delete_url = f"{self._registry_url}/v2/{image_path}/manifests/{digest}"
+        try:
+            del_resp = requests.delete(
+                delete_url,
+                auth=(self._registry_user, self._registry_password),
+                timeout=30,
+                verify=False,
+            )
+            del_resp.raise_for_status()
+        except requests.RequestException as exc:
+            if self._is_not_found(exc):
+                logger.info(
+                    "Manifest already absent for '%s' (digest: %s)", image_path, digest
+                )
+                return
+            raise ValueError(
+                f"Failed to delete manifest for '{image_path}' (digest: {digest}): {exc}"
+            ) from exc
+
+    def delete_image(self, image: str, tag: str) -> None:
+        """
+        Remove a tagged image from the registry by deleting its manifest.
+
+        Resolves the manifest digest for the given tag, then issues a DELETE
+        against the registry API.
+        """
+        image_path = image.strip("/")
+        tag = tag.strip()
+        if not image_path or not tag:
+            raise ValueError("Image path and tag are required.")
+
+        logger.info("Deleting image '%s:%s'", image_path, tag)
+        digest = self._resolve_manifest_digest(image_path, tag)
+        logger.info("Deleting manifest for '%s:%s' (digest: %s)", image_path, tag, digest)
+        self._delete_manifest_by_digest(image_path, digest)
+        logger.info("Deleted '%s:%s' (digest: %s)", image_path, tag, digest)
+
+    def delete_images(
+        self, items: List[Tuple[str, str]]
+    ) -> Tuple[List[str], List[Dict[str, str]]]:
+        """
+        Delete multiple image:tag pairs, deduplicating by (image, digest).
+
+        When several tags reference the same manifest digest, the manifest is
+        deleted only once. Tags whose manifest is already gone are treated as
+        successfully deleted.
+        """
+        deleted: List[str] = []
+        errors: List[Dict[str, str]] = []
+        deleted_digests: Set[Tuple[str, str]] = set()
+
+        for image, tag in items:
+            image_path = image.strip("/")
+            tag = tag.strip()
+            label = f"{image_path}:{tag}"
+
+            if not image_path or not tag:
+                errors.append({"item": label or str((image, tag)), "error": "Image path and tag are required."})
+                continue
+
+            try:
+                digest = self._resolve_manifest_digest(image_path, tag)
+            except ValueError as exc:
+                cause = exc.__cause__
+                if isinstance(cause, requests.RequestException) and self._is_not_found(cause):
+                    deleted.append(label)
+                    continue
+                errors.append({"item": label, "error": str(exc)})
+                continue
+
+            digest_key = (image_path, digest)
+            if digest_key in deleted_digests:
+                deleted.append(label)
+                continue
+
+            try:
+                self._delete_manifest_by_digest(image_path, digest)
+                deleted_digests.add(digest_key)
+                deleted.append(label)
+            except ValueError as exc:
+                errors.append({"item": label, "error": str(exc)})
+
+        return deleted, errors
 
 
     def list_images(self) -> List[Dict[str, List[str]]]:

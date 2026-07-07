@@ -300,6 +300,64 @@ def api_image_detail():
         return json.dumps({"error": str(exc)}), 500
 
 
+@app.route("/api/delete-images", methods=["POST"])
+def api_delete_images():
+    """Delete one or more image tags. Omit tag to delete all tags for an image."""
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return json.dumps({"error": "Request body must include a non-empty 'items' list."}), 400
+
+    registry_url, registry_user, registry_password = _load_config()
+    if not _config_complete(registry_url, registry_user, registry_password):
+        return json.dumps({"error": "Registry not configured."}), 503
+
+    deleted = []
+    errors = []
+    targets = []
+
+    try:
+        reg = EmbeddedRegistryUtil(registry_url, registry_user, registry_password)
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)}), 503
+
+    for item in items:
+        if not isinstance(item, dict):
+            errors.append({"item": str(item), "error": "Invalid item format."})
+            continue
+
+        image_path = str(item.get("image", "")).strip()
+        tag = item.get("tag")
+        tag = str(tag).strip() if tag is not None else None
+
+        if not image_path:
+            errors.append({"item": str(item), "error": "Missing image path."})
+            continue
+
+        if tag:
+            targets.append((image_path, tag))
+        else:
+            try:
+                tags = reg._get_tags(image_path)
+            except ValueError as exc:
+                errors.append({"item": image_path, "error": str(exc)})
+                continue
+            if not tags:
+                errors.append({"item": image_path, "error": "No tags found for this image."})
+                continue
+            targets.extend((image_path, t) for t in tags)
+
+    if targets:
+        batch_deleted, batch_errors = reg.delete_images(targets)
+        deleted.extend(batch_deleted)
+        errors.extend(batch_errors)
+
+    status = 200 if deleted else 400
+    return json.dumps({"deleted": deleted, "errors": errors}), status, {
+        "Content-Type": "application/json"
+    }
+
+
 @app.route("/image")
 def image_detail():
     """Render the image detail page (data loaded client-side via /api/image-detail)."""
