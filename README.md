@@ -1,10 +1,10 @@
-# DS Registry Manager
+# ECS Embedded Registry Manager
 
 A lightweight Flask web application for managing the images stored in the Docker Registry backing a **Cloudera AI Embedded Registry for ECS**. It provides a simple UI to browse repositories, inspect tag-level detail (digest, architecture, OS, size, created date), and delete unwanted image tags directly against the registry's Docker Registry v2 API.
 
 ## 1. Overview
 
-DS Registry Manager gives administrators a browser-based way to manage the contents of an embedded Docker Registry without needing to script calls against the registry API directly. It supports:
+ECS Registry Manager gives administrators a browser-based way to manage the contents of an embedded Docker Registry without needing to script calls against the registry API directly. It supports:
 
 - **Registry configuration** — point the app at a registry URL and store credentials locally so they don't need to be re-entered every session.
 - **Browsing repositories** — lists every repository (image path) in the registry catalog, with the number of tags and the latest tag for each, paginated and loaded progressively via a live progress indicator (server-sent events) so large registries don't block the UI.
@@ -12,7 +12,7 @@ DS Registry Manager gives administrators a browser-based way to manage the conte
 - **Inspecting image detail** — drill into a single repository to see every tag along with its manifest digest, architecture, OS, creation date, and compressed size.
 - **Deleting image tags** — select one or more tags (on either the repository list or the image detail page) and delete their manifests from the registry in a single action.
 
-This tool is intended for use alongside a **Cloudera AI Embedded Registry for ECS** deployment, where each ECS (Cloudera AI Workbench) node runs a local Docker Registry to cache/serve engine and workbench images. Over time these registries accumulate old, unused image tags that consume disk space; DS Registry Manager makes it easy to find and remove them.
+This tool is intended for use alongside a **Cloudera AI Embedded Registry for ECS** deployment. Over time these registries accumulate old, unused image tags that consume disk space; ECS Registry Manager makes it easy to find and remove them.
 
 ## 2. How to Deploy
 
