@@ -2,6 +2,8 @@
 
 A lightweight Flask web application for managing the images stored in the Docker Registry backing a **Cloudera AI Embedded Registry for ECS**. It provides a simple UI to browse repositories, inspect tag-level detail (digest, architecture, OS, size, created date), and delete unwanted image tags directly against the registry's Docker Registry v2 API.
 
+![Registry UI Screenshot](cloudera_ps/static/img/registry_screenshot.png)
+
 ## 1. Overview
 
 ECS Registry Manager gives administrators a browser-based way to manage the contents of an embedded Docker Registry without needing to script calls against the registry API directly. It supports:
