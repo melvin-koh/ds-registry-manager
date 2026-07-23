@@ -84,3 +84,69 @@ def load_registry_image_list(registry_url, registry_user, registry_password) -> 
         logger.error("Failed to load images from registry: %s", exc)
         raise
 
+
+def list_images_with_hash(manifest: dict) -> List[Dict[str, str]]:
+    """
+    List container images and their SHA-256 digests defined in a manifest.
+
+    This will load the manifest JSON using ``_load_manifest`` and extract
+    tuples of the form ``(<path>:<version>, <sha256>)``.
+
+    Parameters
+    ----------
+    manifest : dict
+        Dict of the manifest json content
+
+    Returns
+    -------
+    list of dict
+        Each dict is of the form::
+
+            {
+                "image": "cloudera/cdsw/web:2.0.51-b321",
+                "hash": "sha256:9f155f2533267720f51d5e6971dbdb423e92a74fceabefb54f6454381f0c1dc5",
+            }
+
+    Raises
+    ------
+    ValueError
+        If the manifest structure is invalid or required fields are missing.
+    """
+
+    images_section = manifest.get("images")
+    if not images_section:
+        return []
+
+    if isinstance(images_section, dict):
+        paths = images_section.get("paths", [])
+    elif isinstance(images_section, list):
+        paths = images_section
+    else:
+        raise ValueError("Manifest field 'images' must be either an object or a list.")
+
+    if not isinstance(paths, list):
+        raise ValueError("Manifest field 'images.paths' must be a list.")
+
+    results: List[Dict[str, str]] = []
+    for idx, entry in enumerate(paths):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Manifest 'images[{idx}]' entry must be an object.")
+
+        path = entry.get("path")
+        version = entry.get("version")
+        digest = entry.get("image_sha")
+
+        if not isinstance(path, str) or not isinstance(version, str):
+            raise ValueError(
+                f"Manifest 'images[{idx}]' must contain string 'path' and 'version' fields."
+            )
+
+        if not isinstance(digest, str):
+            raise ValueError(
+                f"Manifest 'images[{idx}]' must contain string 'image_digest' or 'image_sha' field."
+            )
+
+        image_with_tag = f"{path}:{version}"
+        results.append({"image": image_with_tag, "hash": digest})
+
+    return results
