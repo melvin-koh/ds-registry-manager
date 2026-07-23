@@ -7,10 +7,12 @@ from flask import Flask, Response, flash, redirect, render_template, request, ur
 from cloudera_ps.EmbeddedRegistryUtil import EmbeddedRegistryUtil
 from cloudera_ps.util import (
     init_logging,
+    list_images_with_hash,
     load_registry_config,
     load_registry_image_list,
     logger,
     save_registry_config,
+    verify_single_manifest_image,
     format_bytes,
 )
 
@@ -234,6 +236,163 @@ def _sse_stream():
             time.sleep(0.1)
 
 
+# ---------------------------------------------------------------------------
+# Manifest verification — singleton load-state, shared across all SSE clients
+# (mirrors the Images tab's _LoadState / _run_worker / _sse_stream pattern)
+# ---------------------------------------------------------------------------
+
+class _ManifestState:
+    """Thread-safe singleton that holds the state of the single background verification."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.status = "idle"   # idle | running | complete | error
+        self.total = 0
+        self.done = 0
+        self.current_image = ""
+        self.filename = ""
+        self.results = []
+        self.error_message = ""
+
+    # ------------------------------------------------------------------
+    # Writers — called only from the background worker thread
+    # ------------------------------------------------------------------
+
+    def set_running(self, total, filename):
+        with self._lock:
+            self.status = "running"
+            self.total = total
+            self.done = 0
+            self.current_image = ""
+            self.filename = filename
+            self.results = []
+            self.error_message = ""
+
+    def set_progress(self, done, image):
+        with self._lock:
+            self.done = done
+            self.current_image = image
+
+    def set_complete(self, results):
+        with self._lock:
+            self.status = "complete"
+            self.results = results
+
+    def set_error(self, message):
+        with self._lock:
+            self.status = "error"
+            self.error_message = message
+
+    def reset(self):
+        with self._lock:
+            self.status = "idle"
+
+    # ------------------------------------------------------------------
+    # Reader — safe snapshot for SSE clients
+    # ------------------------------------------------------------------
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "status": self.status,
+                "total": self.total,
+                "done": self.done,
+                "current_image": self.current_image,
+                "filename": self.filename,
+                "results": self.results,
+                "error_message": self.error_message,
+            }
+
+
+_manifest_state = _ManifestState()
+_manifest_lock = threading.Lock()   # guards starting a new worker thread
+
+
+def _run_manifest_worker(manifest_images, filename, registry_url, registry_user, registry_password):
+    """Background thread: verifies each manifest image, updates _manifest_state throughout."""
+    try:
+        reg = EmbeddedRegistryUtil(registry_url, registry_user, registry_password)
+        _manifest_state.set_running(len(manifest_images), filename)
+        logger.info("Manifest worker: verifying %d image(s) from '%s'", len(manifest_images), filename)
+
+        results = []
+        for idx, entry in enumerate(manifest_images, 1):
+            row = verify_single_manifest_image(entry, reg)
+            results.append(row)
+            _manifest_state.set_progress(idx, row.get("path", ""))
+
+        _manifest_state.set_complete(results)
+        logger.info("Manifest worker: complete, %d row(s)", len(results))
+
+    except ValueError as exc:
+        logger.error("Manifest worker error: %s", exc)
+        _manifest_state.set_error(str(exc))
+    except Exception as exc:
+        logger.error("Manifest worker unexpected error: %s", exc)
+        _manifest_state.set_error(str(exc))
+
+
+def _start_manifest_worker(manifest_images, filename, registry_url, registry_user, registry_password):
+    """Reset state and start a fresh background worker for a newly uploaded manifest."""
+    with _manifest_lock:
+        _manifest_state.reset()
+        _manifest_state.status = "running"   # mark early so no second thread races in
+        t = threading.Thread(
+            target=_run_manifest_worker,
+            args=(manifest_images, filename, registry_url, registry_user, registry_password),
+            daemon=True,
+        )
+        t.start()
+        logger.info("New manifest verification worker started for '%s'", filename)
+
+
+def _manifest_sse_stream():
+    """
+    Generator for a single SSE client. Polls _manifest_state and emits events.
+    All clients share the same _manifest_state, so they all see identical progress.
+    """
+    sent_total = False
+
+    while True:
+        snap = _manifest_state.snapshot()
+
+        # Emit 'total' once we know how many images there are
+        if not sent_total and snap["total"] > 0:
+            yield f"data: {json.dumps({'type': 'total', 'total': snap['total'], 'filename': snap['filename']})}\n\n"
+            sent_total = True
+
+        if snap["status"] == "running":
+            yield f"data: {json.dumps({'type': 'progress', 'done': snap['done'], 'total': snap['total'], 'image': snap['current_image']})}\n\n"
+            time.sleep(0.3)
+
+        elif snap["status"] == "complete":
+            if not sent_total:
+                yield f"data: {json.dumps({'type': 'total', 'total': snap['total'], 'filename': snap['filename']})}\n\n"
+            yield f"data: {json.dumps({'type': 'complete', 'results': snap['results'], 'filename': snap['filename']})}\n\n"
+            break
+
+        elif snap["status"] == "error":
+            yield f"data: {json.dumps({'type': 'error', 'message': snap['error_message']})}\n\n"
+            break
+
+        elif snap["status"] == "idle":
+            # No upload has kicked off a worker — nothing to stream.
+            yield f"data: {json.dumps({'type': 'error', 'message': 'No manifest verification in progress.'})}\n\n"
+            break
+
+        else:
+            time.sleep(0.1)
+
+
+@app.route("/api/verify-manifest")
+def api_verify_manifest():
+    return Response(
+        _manifest_sse_stream(),
+        mimetype="text/event-stream",
+        headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"},
+    )
+
+
 @app.route("/api/load-images")
 def api_load_images():
     registry_url, registry_user, registry_password = _load_config()
@@ -421,6 +580,70 @@ def settings():
         registry_url=registry_url or "",
         registry_user=registry_user or "",
         has_existing_config=has_existing_config,
+    )
+
+
+@app.route("/manifest", methods=["GET", "POST"])
+def manifest():
+    registry_url, registry_user, registry_password = _load_config()
+    has_config = _config_complete(registry_url, registry_user, registry_password)
+
+    verifying = False
+    manifest_filename = None
+    manifest_version = None
+
+    if request.method == "POST":
+        if not has_config:
+            flash("Configure registry credentials before verifying a manifest.", "warning")
+            return redirect(url_for("settings"))
+
+        uploaded = request.files.get("manifest_file")
+        if uploaded is None or uploaded.filename == "":
+            flash("Please choose a manifest JSON file to upload.", "error")
+        else:
+            manifest_filename = uploaded.filename
+            try:
+                manifest_data = json.load(uploaded.stream)
+            except (ValueError, UnicodeDecodeError) as exc:
+                flash(f"Uploaded file is not valid JSON: {exc}", "error")
+                manifest_data = None
+
+            if manifest_data is not None:
+                try:
+                    manifest_images = list_images_with_hash(manifest_data)
+                except ValueError as exc:
+                    flash(f"Invalid manifest structure: {exc}", "error")
+                    manifest_images = None
+
+                if manifest_images is not None:
+                    if not manifest_images:
+                        flash("No images were found in the uploaded manifest.", "warning")
+                    else:
+
+                        manifest_version = f"{manifest_data.get('name')} {manifest_data.get('version')}-{manifest_data.get('buildnumber')}"
+
+                        # Kick off the background worker; the page streams
+                        # progress via SSE, same pattern as the Images tab.
+                        _start_manifest_worker(
+                            manifest_images,
+                            manifest_filename,
+                            registry_url,
+                            registry_user,
+                            registry_password,
+                        )
+                        verifying = True
+                        logger.info(
+                            "Manifest '%s' uploaded — streaming verification of %d image(s)",
+                            manifest_filename,
+                            len(manifest_images),
+                        )
+
+    return render_template(
+        "manifest.html",
+        active_tab="manifest",
+        verifying=verifying,
+        manifest_filename=manifest_filename,
+        manifest_version=manifest_version,
     )
 
 

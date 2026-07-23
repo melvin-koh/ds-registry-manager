@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+
+{% block title %}Manifest — Embedded Registry Image Manager{% endblock %}
+
+{% block content %}
+<section class="card">
+    <h2>Verify Data Services Manifest</h2>
+    <p class="help-text">
+        Upload a Cloudera Data Services manifest (JSON) to verify the images in the Embedded Registry.
+    </p>
+
+    <form method="post" action="{{ url_for('manifest') }}" enctype="multipart/form-data" class="upload-form">
+        <input type="file" id="manifest_file" name="manifest_file" accept=".json,application/json" required>
+        <button type="submit" class="btn btn-primary">Upload &amp; Verify</button>
+    </form>
+</section>
+
+{% if verifying %}
+<section class="card">
+    <div class="card-header">
+        <h2>Verification Results</h2>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay" style="
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; padding: 3rem 1rem; gap: 1rem;">
+        <svg width="48" height="48" viewBox="0 0 48 48" fill="none"
+             xmlns="http://www.w3.org/2000/svg"
+             style="animation: spin 1s linear infinite;">
+            <circle cx="24" cy="24" r="20" stroke="#e0e0e0" stroke-width="4"/>
+            <path d="M44 24a20 20 0 0 0-20-20" stroke="#F96702" stroke-width="4"
+                  stroke-linecap="round"/>
+        </svg>
+        <p id="loading-status" style="color:#555; font-size:0.95rem; margin:0;">
+            Verifying {{ manifest_filename }}…
+        </p>
+        <div style="width:320px; background:#e0e0e0; border-radius:4px; height:8px; overflow:hidden;">
+            <div id="progress-bar"
+                 style="height:100%; width:0; background:#F96702;
+                        border-radius:4px; transition:width 0.2s ease;"></div>
+        </div>
+        <p id="progress-label" style="color:#888; font-size:0.85rem; margin:0;">0 / 0 images</p>
+    </div>
+
+    <!-- Results (hidden until stream completes) -->
+    <div id="results-area" style="display:none;">
+        <p class="help-text" id="summary-text"></p>
+        <div class="summary-stats" id="summary-stats"></div>
+        <div class="table-wrapper">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Image Path</th>
+                        <th>Image Tag</th>
+                        <th>Available</th>
+                        <th>Reason</th>
+                    </tr>
+                </thead>
+                <tbody id="manifest-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Error area -->
+    <div id="error-area" style="display:none;">
+        <p class="empty-state" id="error-text" style="color:#c0392b; padding:2rem;"></p>
+    </div>
+</section>
+
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<script>
+function escHtml(str) {
+    return String(str)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function renderResults(rows, filename) {
+    const tbody = document.getElementById('manifest-tbody');
+    if (rows.length === 0) {
+        tbody.innerHTML =
+            '<tr><td colspan="4" class="empty-state">No images found in the uploaded manifest.</td></tr>';
+    } else {
+        tbody.innerHTML = rows.map(r => `
+            <tr>
+                <td class="mono">${escHtml(r.path)}</td>
+                <td class="mono">${escHtml(r.tag)}</td>
+                <td>${r.found
+                    ? '<span class="status-icon status-ok" title="Available">&#10003;</span>'
+                    : '<span class="status-icon status-fail" title="Not available">&#10007;</span>'}</td>
+                <td class="reason-cell${r.found ? '' : ' reason-fail'}">${escHtml(r.reason || '—')}</td>
+            </tr>`).join('');
+    }
+
+    const okCount = rows.filter(r => r.found).length;
+    document.getElementById('summary-text').innerHTML = `<div class="summary-text"><strong>Version: {{ manifest_version }}</strong></div>`;
+    document.getElementById('summary-stats').innerHTML = `
+        <div class="summary-stat"><strong>${rows.length}</strong>Total images</div>
+        <div class="summary-stat"><strong>${okCount}</strong>Verified</div>
+        <div class="summary-stat"><strong>${rows.length - okCount}</strong>Issues found</div>
+    `;
+}
+
+function startManifestStream() {
+    document.getElementById('loading-overlay').style.display = 'flex';
+    document.getElementById('results-area').style.display = 'none';
+    document.getElementById('error-area').style.display = 'none';
+
+    const src = new EventSource("{{ url_for('api_verify_manifest') }}");
+
+    src.onmessage = function (e) {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === 'total') {
+            document.getElementById('loading-status').textContent =
+                `Verifying ${msg.total} image(s) from ${msg.filename}…`;
+            document.getElementById('progress-label').textContent = `0 / ${msg.total} images`;
+        }
+        else if (msg.type === 'progress') {
+            const pct = msg.total > 0 ? (msg.done / msg.total * 100) : 0;
+            document.getElementById('progress-bar').style.width = pct + '%';
+            document.getElementById('loading-status').textContent = `Checking: ${msg.image}`;
+            document.getElementById('progress-label').textContent = `${msg.done} / ${msg.total} images`;
+        }
+        else if (msg.type === 'complete') {
+            src.close();
+            document.getElementById('loading-overlay').style.display = 'none';
+            document.getElementById('results-area').style.display = '';
+            renderResults(msg.results, msg.filename);
+        }
+        else if (msg.type === 'error') {
+            src.close();
+            document.getElementById('loading-overlay').style.display = 'none';
+            document.getElementById('error-area').style.display = '';
+            document.getElementById('error-text').textContent = 'Unable to verify manifest: ' + msg.message;
+        }
+    };
+
+    src.onerror = function () {
+        src.close();
+        document.getElementById('loading-overlay').style.display = 'none';
+        document.getElementById('error-area').style.display = '';
+        document.getElementById('error-text').textContent =
+            'Connection to verification stream lost. Please try again.';
+    };
+}
+
+startManifestStream();
+</script>
+{% endif %}
+{% endblock %}

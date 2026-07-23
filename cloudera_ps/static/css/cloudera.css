@@ -354,6 +354,75 @@ body {
     margin-bottom: 0.35rem;
 }
 
+.status-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: 50%;
+    font-weight: 700;
+    font-size: 0.9rem;
+    line-height: 1;
+}
+
+.status-icon.status-ok {
+    background: var(--success-bg);
+    color: var(--success-text);
+}
+
+.status-icon.status-fail {
+    background: var(--error-bg);
+    color: var(--error-text);
+}
+
+.reason-cell {
+    color: var(--text-muted);
+}
+
+.reason-cell.reason-fail {
+    color: var(--error-text);
+}
+
+.upload-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.upload-form input[type="file"] {
+    padding: 0.4rem 0;
+}
+
+.summary-text {
+    display: block;
+    font-size: 1rem;
+    color: var(--text-dark);    
+}
+
+.summary-stats {
+    display: flex;
+    gap: 1.5rem;
+    margin: 1rem 0;
+    flex-wrap: wrap;
+}
+
+.summary-stat {
+    background: #fafafa;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
+}
+
+.summary-stat strong {
+    display: block;
+    font-size: 1rem;
+    color: var(--text-dark);
+}
+
 .footer {
     text-align: center;
     padding: 1rem;

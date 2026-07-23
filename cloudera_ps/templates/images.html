@@ -166,12 +166,12 @@ const GC_MESSAGE =
 async function deleteSelectedImages() {
   const selected = [...document.querySelectorAll('.image-select:checked')].map(cb => cb.value);
   if (selected.length === 0) {
-    alert('Please select at least one image to delete.');
+    alert('\nPlease select at least one image to delete.');
     return;
   }
 
   const confirmMsg =
-    `Are you sure you want to delete the following image(s) and all of their tags?\n\n` +
+    `\nAre you sure you want to delete the following image(s) and all of their tags?\n\n` +
     selected.map(image => `• ${image}`).join('\n') +
     `\n\nThis action cannot be undone.`;
   if (!confirm(confirmMsg)) return;
@@ -190,7 +190,7 @@ async function deleteSelectedImages() {
 
     if (data.deleted && data.deleted.length > 0) {
       let successMsg =
-        `Successfully deleted:\n\n${data.deleted.map(item => `• ${item}`).join('\n')}\n\n${GC_MESSAGE}`;
+        `\nSuccessfully deleted:\n\n${data.deleted.map(item => `• ${item}`).join('\n')}\n\n${GC_MESSAGE}`;
       if (data.errors && data.errors.length > 0) {
         successMsg +=
           `\n\nSome deletions failed:\n` +
@@ -202,7 +202,7 @@ async function deleteSelectedImages() {
       const errDetail = data.errors && data.errors.length
         ? data.errors.map(e => `• ${e.item}: ${e.error}`).join('\n')
         : (data.error || 'Unknown error');
-      alert(`Delete failed:\n\n${errDetail}`);
+      alert(`\nDelete failed:\n\n${errDetail}`);
     }
   } catch (err) {
     alert('Delete failed: ' + err.message);

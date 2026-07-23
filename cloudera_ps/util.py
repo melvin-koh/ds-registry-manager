@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Dict, List
 
+import requests
+
 from cloudera_ps.EmbeddedRegistryUtil import EmbeddedRegistryUtil
 
 LOG_FORMAT = "%(asctime)-15s %(levelname)-6s %(message)s"
@@ -134,7 +136,7 @@ def list_images_with_hash(manifest: dict) -> List[Dict[str, str]]:
 
         path = entry.get("path")
         version = entry.get("version")
-        digest = entry.get("image_sha")
+        digest = entry.get("image_digest")
 
         if not isinstance(path, str) or not isinstance(version, str):
             raise ValueError(
@@ -150,3 +152,92 @@ def list_images_with_hash(manifest: dict) -> List[Dict[str, str]]:
         results.append({"image": image_with_tag, "hash": digest})
 
     return results
+
+
+def verify_single_manifest_image(
+    entry: Dict[str, str], reg: EmbeddedRegistryUtil
+) -> Dict[str, object]:
+    """
+    Cross-check a single manifest image entry against the configured Docker
+    registry. Split out from ``verify_manifest_images`` so a caller (e.g. a
+    background SSE worker) can report progress after each image instead of
+    waiting for the whole batch to finish.
+
+    Parameters
+    ----------
+    entry : dict
+        A single item from ``list_images_with_hash`` — ``image``
+        (``<path>:<tag>``) and ``hash`` (``sha256:...``) keys.
+    reg : EmbeddedRegistryUtil
+        An already-authenticated registry client.
+
+    Returns
+    -------
+    dict
+        ::
+
+            {
+                "path": "cloudera/cdsw/web",
+                "tag": "2.0.51-b321",
+                "expected_hash": "sha256:...",
+                "found": True/False,
+                "reason": "" or a human-readable explanation,
+            }
+    """
+    image_with_tag = entry.get("image", "")
+    expected_hash = entry.get("hash", "")
+
+    if ":" in image_with_tag:
+        path, tag = image_with_tag.rsplit(":", 1)
+    else:
+        path, tag = image_with_tag, ""
+
+    row: Dict[str, object] = {
+        "path": path,
+        "tag": tag,
+        "expected_hash": expected_hash,
+        "found": False,
+        "reason": "",
+    }
+
+    # Step 1: does the repository (image path) exist in the registry?
+    try:
+        available_tags = reg._get_tags(path)
+    except ValueError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, requests.RequestException) and EmbeddedRegistryUtil._is_not_found(cause):
+            row["reason"] = "Image not found"
+        else:
+            row["reason"] = f"Unable to verify image path: {exc}"
+        return row
+
+    # Step 2: is the expected tag present on that image path?
+    if tag not in available_tags:
+        row["reason"] = "Image tag not found"
+        return row
+
+    # Step 3: does the registry's manifest digest match the manifest's?
+    try:
+        actual_digest = reg._resolve_manifest_digest(path, tag)
+    except ValueError as exc:
+        row["reason"] = f"Unable to verify image digest: {exc}"
+        return row
+
+    if expected_hash and actual_digest != expected_hash:
+        row["reason"] = "SHA digest does not match"
+        return row
+
+    row["found"] = True
+    return row
+
+
+#def verify_manifest_images(
+#    manifest_images: List[Dict[str, str]], reg: EmbeddedRegistryUtil
+#) -> List[Dict[str, object]]:
+#    """
+#    Cross-check every image declared in a Data Services manifest against the
+#    configured Docker registry. Thin wrapper around
+#    ``verify_single_manifest_image`` for callers that don't need per-image
+#    progress (e.g. tests, scripts).
+#    """
+#    return [verify_single_manifest_image(entry, reg) for entry in manifest_images]

@@ -16,6 +16,7 @@
 
     <nav class="tab-nav">
         <a href="{{ url_for('images') }}" class="tab-link{% if active_tab == 'images' %} active{% endif %}">Images</a>
+        <a href="{{ url_for('manifest') }}" class="tab-link{% if active_tab == 'manifest' %} active{% endif %}">Manifest</a>
         <a href="{{ url_for('settings') }}" class="tab-link{% if active_tab == 'settings' %} active{% endif %}">Settings</a>
     </nav>
 
